@@ -20,6 +20,7 @@ import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.storage.LevelResource;
+import org.popcraft.chunky.ChunkyForge;
 import org.popcraft.chunky.ducks.MinecraftServerExtension;
 import org.popcraft.chunky.mixin.ChunkMapMixin;
 import org.popcraft.chunky.mixin.MinecraftServerAccess;
@@ -41,10 +42,12 @@ public class ForgeWorld implements World {
     private static final boolean UPDATE_CHUNK_NBT = Boolean.getBoolean("chunky.updateChunkNbt");
     private final ServerLevel world;
     private final Border worldBorder;
+    private final ForgeBatcher batcher;
 
     public ForgeWorld(final ServerLevel world) {
         this.world = world;
         this.worldBorder = new ForgeBorder(world.getWorldBorder());
+        this.batcher = new ForgeBatcher(world);
     }
 
     @Override
@@ -94,7 +97,7 @@ public class ForgeWorld implements World {
     @Override
     public CompletableFuture<Void> getChunkAtAsync(final int x, final int z) {
         if (Thread.currentThread() != world.getServer().getRunningThread()) {
-            return CompletableFuture.supplyAsync(() -> getChunkAtAsync(x, z), world.getServer()).thenCompose(Function.identity());
+            return CompletableFuture.supplyAsync(() -> getChunkAtAsync(x, z), this.batcher.getTicketAddExecutor()).thenCompose(Function.identity());
         } else {
             final ChunkPos chunkPos = new ChunkPos(x, z);
             final ServerChunkCache serverChunkCache = world.getChunkSource();
@@ -102,17 +105,22 @@ public class ForgeWorld implements World {
             if (TICKING_LOAD_DURATION > 0) {
                 serverChunkCache.addTicketWithRadius(CHUNKY_TICKING, chunkPos, 1);
             }
-            ((ServerChunkCacheMixin) serverChunkCache).invokeRunDistanceManagerUpdates();
-            // note: when Moonrise is present, holders do not get created most of the time even after explicit distance manager update
-            // so we force `create = true` *only if* Moonrise is present, as it breaks pausing for everyone else
-            return ((ServerChunkCacheMixin) world.getChunkSource()).invokeGetChunkFutureMainThread(x, z, ChunkStatus.FULL, false)
-                    .thenApplyAsync(Function.identity(), ((ChunkMapMixin) serverChunkCache.chunkMap).getMainThreadExecutor()) // workaround to prevent memory leaks in vanilla chunk system when racing with entity chunks
-                    .whenCompleteAsync((ignored, throwable) -> {
-                        serverChunkCache.removeTicketWithRadius(CHUNKY, chunkPos, 0);
-                        ((MinecraftServerExtension) world.getServer()).chunky$markChunkSystemHousekeeping();
-                        ((MinecraftServerAccess) world.getServer()).setEmptyTicks(0);
-                    }, world.getServer())
-                    .thenApply(ignored -> null);
+            return CompletableFuture.supplyAsync(() -> {
+                // note: when Moonrise is present, holders do not get created most of the time even after explicit distance manager update
+                // so we force `create = true` *only if* Moonrise is present, as it breaks pausing for everyone else
+                boolean create = ChunkyForge.ENABLE_MOONRISE_WORKAROUNDS;
+                return world.getChunkSource().getChunkFutureMainThread(x, z, ChunkStatus.FULL, create)
+                        .thenApplyAsync(Function.identity(), serverChunkCache.chunkMap.mainThreadExecutor) // workaround to prevent memory leaks in vanilla chunk system
+                        .whenCompleteAsync((ignored, throwable) -> {
+                            serverChunkCache.removeTicketWithRadius(CHUNKY, chunkPos, 0);
+                            ((MinecraftServerExtension) world.getServer()).chunky$markChunkSystemHousekeeping();
+                            if (ChunkyForge.ENABLE_MOONRISE_WORKAROUNDS) {
+                                // note: to prevent pausing on dedicated server when Moonrise is present
+                                ((MinecraftServerAccess) world.getServer()).setEmptyTicks(0);
+                            }
+                        }, this.batcher.getTicketRemoveExecutor())
+                        .thenApply(ignored -> (Void) null);
+            }, this.batcher.getChunkLoadExecutor()).thenCompose(Function.identity());
         }
     }
 

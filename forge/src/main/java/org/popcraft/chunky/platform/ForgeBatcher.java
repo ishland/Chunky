@@ -2,6 +2,7 @@ package org.popcraft.chunky.platform;
 
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import org.popcraft.chunky.mixin.ServerChunkCacheMixin;
 import org.popcraft.chunky.platform.impl.batcher.AbstractBatcher;
 
 public class ForgeBatcher extends AbstractBatcher {
@@ -13,7 +14,7 @@ public class ForgeBatcher extends AbstractBatcher {
 
     @Override
     protected void tickTickets() {
-        this.world.getChunkSource().runDistanceManagerUpdates();
+        ((ServerChunkCacheMixin) this.world.getChunkSource()).invokeRunDistanceManagerUpdates();
     }
 
     @Override

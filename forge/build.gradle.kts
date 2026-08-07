@@ -1,5 +1,5 @@
 plugins {
-    id("org.relativitymc.neo-loom") version "1.16.0-alpha.4"
+    id("org.relativitymc.neo-loom") version "1.17-SNAPSHOT"
 }
 
 val shade: Configuration by configurations.creating
@@ -17,7 +17,7 @@ dependencies {
 
 loom {
     runs.forEach {
-        it.ideConfigGenerated(true)
+        it.generateRunConfig = true
     }
     mods {
         create("main") {
@@ -25,6 +25,7 @@ loom {
             dependency(project.dependencyFactory.create(project(":chunky-common")))
         }
     }
+    forgeExtraMixinConfigs.add("chunky.mixins.json")
 }
 
 tasks {
